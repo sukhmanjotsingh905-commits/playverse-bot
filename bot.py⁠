@@ -2,7 +2,7 @@ import sqlite3
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-TOKEN = "YOUR_BOT_TOKEN_HERE"
+TOKEN = "8955259098:AAEHDsM2TvsMNrAI1SNz1zyQC5UbCtw_rk4"
 ADMIN_CHAT_ID = 8955259098
 
 # --- DATABASE SETUP ---
