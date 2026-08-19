@@ -3,7 +3,7 @@ import random
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-TOKEN = "8955259098:AAEHDsM2TvsMNrAI1SNz1zyQC5UbCtw_rk4"  # Main Bot Token
+TOKEN = "8955259098:AAFd0fOWkq7PJxubL3VtlOiXgwVPeLn11jU"  # Main Bot Token
 ADMIN_CHAT_ID = 8963774797                                 # Admin Approvals Bot ID / Target Chat ID
 ADMIN_MAIN_ID = 8241567709                                 # Admin Main ID
 GROUP_LINK = "https://t.me/playversegroup"
