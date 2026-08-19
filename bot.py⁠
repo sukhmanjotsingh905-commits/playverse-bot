@@ -1,5 +1,5 @@
+import sqlite3
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
 TOKEN = "YOUR_BOT_TOKEN_HERE"
@@ -22,118 +22,74 @@ def init_db():
 
 init_db()
 
-# --- 1. START COMMAND ---
+# --- START COMMAND ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    chat = update.effective_chat
-    
-    # Save user to DB if not exists
     conn = sqlite3.connect("playverse.db")
     cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", 
-                   (user.id, user.username or user.first_name))
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user.id, user.username))
     conn.commit()
     conn.close()
 
-    text = "WELCOME TO PLAYVERSE BOT 🤖\nYou can bet in our group. Click below to join our official group!"
-    keyboard = [[InlineKeyboardButton("Playverse Official Group", url="https://t.me/playversegroup")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await update.message.reply_text(text, reply_markup=reply_markup)
-
-# --- 2. BALANCE COMMAND ---
-async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    conn = sqlite3.connect("playverse.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT username, balance, upi FROM users WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    conn.close()
-
-    if row:
-        username, bal, upi = row
-        response = (
-            f"Your Wallet\n"
-            f"👤 User: {username}\n"
-            f"💵 Balance: ₹{bal:.2f}\n"
-            f"👨‍💻 UPI: {upi}\n\n"
-            f"Min withdrawal: ₹50.00"
-        )
-        await update.message.reply_text(response)
-    else:
-        await update.message.reply_text("Please start the bot first using /start")
-
-# --- 3. SAVE UPI SYSTEM ---
-async def saveupi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['waiting_for_upi'] = True
-    await update.message.reply_text("SEND YOUR UPI ADDRESS")
-
-async def handle_upi_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get('waiting_for_upi'):
-        upi_input = update.message.text.strip()
-        # Basic UPI regex validation (e.g., username@okhdfcbank, name@ybl)
-        upi_pattern = r"^[\w.-]+@[\w.-]+$"
-        
-        if re.match(upi_pattern, upi_input):
-            user_id = update.effective_user.id
-            conn = sqlite3.connect("playverse.db")
-            cursor = conn.cursor()
-            cursor.execute("UPDATE users SET upi = ? WHERE user_id = ?", (upi_input, user_id))
-            conn.commit()
-            conn.close()
-            
-            context.user_data['waiting_for_upi'] = False
-            await update.message.reply_text("YOUR UPI ADDRESS HAS BEED SAVED ✅")
-        else:
-            await update.message.reply_text("UNKNOWN UPI ADDRESS ⚠️ Please send a valid UPI ID.")
-
-# --- 4. DEPOSIT SYSTEM ---
-async def deposit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("USDT / Crypto Networks", callback_data="crypto_deposit")],
-        [InlineKeyboardButton("INR / UPI Deposit", callback_data="inr_deposit")]
+        [InlineKeyboardButton("💰 Check Balance", callback_data="balance")],
+        [InlineKeyboardButton("⚙️ Set UPI", callback_data="set_upi")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    msg = (
-        "⬇️ **Deposit**\n\n"
-        "How much do you want to deposit?\n"
-        "Min: ₹50.00 / $5.\n"
-        "Choose your preferred payment method below:"
+    await update.message.reply_text(
+        f"Welcome to Playverse Bot, {user.first_name}!\nChoose an option below:",
+        reply_markup=reply_markup
     )
-    await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
 
-async def deposit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- BUTTON HANDLER ---
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    if query.data == "crypto_deposit":
-        crypto_text = (
-            "🌐 **Choose Crypto Network:**\n\n"
-            "• **BNB Chain / Ethereum:** `0xd1A8F830AF83D7CBC2105223c10063EF991D98c5`\n"
-            "• **Solana:** `8n5utQ22d8nsrs9RvAzc5Adjsd1m97Jtbxw3HstbReKs`\n"
-            "• **Tron (TRC20):** `TGS8Yq1CLJPptBjFRLAiGAadxeMWxzZkkB`\n\n"
-            "Send the exact amount and share the transaction hash with admin."
-        )
-        await query.edit_message_text(crypto_text, parse_mode="Markdown")
-    elif query.data == "inr_deposit":
-        await query.edit_message_text("Please scan the QR code provided by admin or send amount between ₹50 - ₹5000 to the official UPI ID.")
-
-# --- MAIN APP ---
-def main():
-    app = Application.builder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("balance", balance_command))
-    app.add_handler(CommandHandler("saveupi", saveupi_command))
-    app.add_handler(CommandHandler("deposit", deposit_command))
+    user_id = query.from_user.id
     
-    app.add_handler(CallbackQueryHandler(deposit_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_upi_message))
+    if query.data == "balance":
+        conn = sqlite3.connect("playverse.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT balance, upi FROM users WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        balance = row[0] if row else 0.00
+        upi = row[1] if row else "Not Set"
+        
+        await query.message.edit_text(f"💰 Your Balance: ₹{balance}\n📱 Registered UPI: {upi}")
+        
+    elif query.data == "set_upi":
+        await query.message.edit_text("Please send your UPI ID in the next message (e.g., yourname@paytm).")
+        context.user_data["waiting_for_upi"] = True
 
-    print("Bot is running...")
-    app.run_polling()
+# --- MESSAGE HANDLER ---
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("waiting_for_upi"):
+        user_id = update.effective_user.id
+        upi_id = update.message.text
+        
+        conn = sqlite3.connect("playverse.db")
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET upi = ? WHERE user_id = ?", (upi_id, user_id))
+        conn.commit()
+        conn.close()
+        
+        context.user_data["waiting_for_upi"] = False
+        await update.message.reply_text(f"✅ Success! Your UPI has been updated to: {upi_id}")
+
+# --- MAIN FUNCTION ---
+def main():
+    application = Application.builder().token(TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    print("Bot is starting...")
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
