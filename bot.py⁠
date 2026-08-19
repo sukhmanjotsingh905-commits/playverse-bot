@@ -5,13 +5,13 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 
 TOKEN = "8241567709:AAH..."  # Your main bot token
 ADMIN_CHAT_ID = 8963774797   # Admin / Approval Bot ID
+GROUP_LINK = "https://t.me/playversegroup"
 
 # --- DATABASE SETUP ---
 def init_db():
     conn = sqlite3.connect("playverse.db")
     cursor = conn.cursor()
     
-    # Users Table (Added usd_address column)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -25,7 +25,6 @@ def init_db():
         )
     """)
     
-    # Transactions Table (Deposits & Withdrawals)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
             tx_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,6 +50,20 @@ def calculate_payout(amount, multiplier=2.0):
     final_win = raw_win - tax
     return round(final_win, 2)
 
+# --- PRIVACY GUARD (GROUP ONLY CHECK) ---
+async def check_group_context(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    chat = update.effective_chat
+    if chat.type == "private":
+        keyboard = [[InlineKeyboardButton("Join Official Group to Play", url=GROUP_LINK)]]
+        await update.message.reply_text(
+            "🔒 **Games are not allowed in Inbox / DM!**\n"
+            "For privacy and community gameplay, you can only play games inside our official group.",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        return False
+    return True
+
 # --- START COMMAND ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -64,16 +77,37 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     welcome_msg = (
         "WELCOME TO PLAYVERSE BOT 🤖\n"
-        "You can bet in our group! Click playverse official group and join our official group"
+        "You can bet in our group! Click below to join our official group."
     )
-    keyboard = [[InlineKeyboardButton("Playverse Official Group", url="https://t.me/playversegroup")]]
+    keyboard = [[InlineKeyboardButton("Playverse Official Group", url=GROUP_LINK)]]
     
     await update.message.reply_text(
         welcome_msg,
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
     )
 
-# --- WALLET & BALANCE ---
+# --- BALANCE VALIDATOR HELPER ---
+async def validate_user_balance(update: Update, amount: float) -> bool:
+    user = update.effective_user
+    conn = sqlite3.connect("playverse.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user.id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    balance = row[0] if row else 0.00
+    if balance < 10 or balance < amount:
+        await update.message.reply_text(
+            f"❌ **Low Balance!**\n"
+            f"Your Balance: ₹{balance:.2f} | Required: ₹{amount}\n"
+            f"Minimum play balance required is ₹10 or $1. Please use `/deposit` to add funds.",
+            parse_mode="Markdown"
+        )
+        return False
+    return True
+
+# --- WALLET & COMMANDS ---
 async def wallet_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     conn = sqlite3.connect("playverse.db")
@@ -99,18 +133,15 @@ async def wallet_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-# --- SAVE UPI & USD ADDRESS ---
 async def saveupi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
         await update.message.reply_text("SEND YOUR UPI ADDRESS (e.g., /saveupi yourname@paytm)")
         return
-    
     upi_id = args[0]
     if "@" not in upi_id and "." not in upi_id:
         await update.message.reply_text("UNKNOWN UPI ADDRESS ⚠️")
         return
-
     user = update.effective_user
     conn = sqlite3.connect("playverse.db")
     cursor = conn.cursor()
@@ -119,26 +150,39 @@ async def saveupi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     await update.message.reply_text("YOUR UPI ADDRESS HAS BEEN SAVED ✅")
 
-async def saveusd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def tip_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
-    if not args:
-        await update.message.reply_text("SEND YOUR USDT / USD WALLET ADDRESS (e.g., /saveusd 0xYourWalletAddress...)")
+    if len(args) < 2:
+        await update.message.reply_text("Usage: `/tip @user amount`")
         return
-    
-    usd_addr = args[0]
-    if len(usd_addr) < 10:
-        await update.message.reply_text("UNKNOWN WALLET ADDRESS ⚠️ Please provide a valid blockchain address.")
+    target_user_str = args[0]
+    try:
+        amount = float(args[1])
+    except ValueError:
+        await update.message.reply_text("Invalid amount format.")
         return
 
     user = update.effective_user
+    if not await validate_user_balance(update, amount): return
+
     conn = sqlite3.connect("playverse.db")
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET usd_address = ? WHERE user_id = ?", (usd_addr, user.id))
+    cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user.id))
     conn.commit()
     conn.close()
-    await update.message.reply_text("YOUR USDT WALLET ADDRESS HAS BEEN SAVED ✅")
+    await update.message.reply_text(f"🎁 Successfully tipped {amount} to {target_user_str}!")
 
-# --- DEPOSIT SYSTEM ---
+async def wager_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    conn = sqlite3.connect("playverse.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT total_wagered FROM users WHERE user_id = ?", (user.id,))
+    row = cursor.fetchone()
+    conn.close()
+    wagered = row[0] if row else 0.00
+    await update.message.reply_text(f"📈 **Your Wagering Progress**\nTotal Wagered: ₹{wagered:.2f}", parse_mode="Markdown")
+
+# --- DEPOSIT & WITHDRAWAL ---
 async def deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("📱 UPI / QR Deposit", callback_data="dep_upi")],
@@ -147,74 +191,56 @@ async def deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("⚡ Tron", callback_data="dep_tron")],
         [InlineKeyboardButton("🔷 Ethereum", callback_data="dep_eth")]
     ]
-    text = (
-        "⬇️ Deposit\n"
-        "How much do you want to deposit? Min: ₹50.00. Type 5 for USDT or ₹500 for INR.\n"
-        "Choose your network below:"
-    )
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("⬇️ Deposit\nHow much do you want to deposit? Min: ₹50.00. Type 5 for USDT or ₹500 for INR.", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def deposit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    data = query.data
+    context.user_data["awaiting_utr"] = True
+    await query.message.reply_text("Send your payment proof / UTR hash here to submit for admin approval.", parse_mode="Markdown")
 
-    if data == "dep_upi":
-        context.user_data["awaiting_utr"] = True
-        await context.bot.send_photo(
-            chat_id=query.message.chat_id,
-            photo="IMG_0427.PNG",
-            caption="📱 **Playverse QRIS Payment**\nScan the QR code, pay the amount, and reply here with your **UTR / Transaction ID**.",
-            parse_mode="Markdown"
-        )
-    elif data == "dep_usdt_bnb":
-        context.user_data["awaiting_utr"] = True
-        await query.message.reply_text("Send USDT (Minimum $5) to BNB Chain address:\n`0xd1A8F830AF83D7CBC2105223c10063EF991D98c5`\nThen reply here with your TxID.", parse_mode="Markdown")
-    elif data == "dep_sol":
-        context.user_data["awaiting_utr"] = True
-        await query.message.reply_text("Send Solana to address:\n`8n5utQ22d8nsrs9RvAzc5Adjsd1m97Jtbxw3HstbReKs`\nThen reply here with your TxID.", parse_mode="Markdown")
-    elif data == "dep_tron":
-        context.user_data["awaiting_utr"] = True
-        await query.message.reply_text("Send Tron to address:\n`TGS8Yq1CLJPptBjFRLAiGAadxeMWxzZkkB`\nThen reply here with your TxID.", parse_mode="Markdown")
-    elif data == "dep_eth":
-        context.user_data["awaiting_utr"] = True
-        await query.message.reply_text("Send Ethereum to address:\n`0xd1A8F830AF83D7CBC2105223c10063EF991D98c5`\nThen reply here with your TxID.", parse_mode="Markdown")
-
-# --- WITHDRAWAL SYSTEM (UPI & Crypto) ---
 async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+    keyboard = [
+        [InlineKeyboardButton("📱 Withdraw to UPI", callback_data="w_type_upi")],
+        [InlineKeyboardButton("💎 Withdraw to Crypto", callback_data="w_type_crypto")]
+    ]
+    await update.message.reply_text("📤 **Select Withdrawal Method**", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def withdraw_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data == "w_type_upi":
+        context.user_data["withdrawal_method"] = "UPI"
+        await query.message.edit_text("Send amount using: `/wamount <amount>` (Min ₹50)")
+    else:
+        context.user_data["withdrawal_method"] = "Crypto"
+        await query.message.edit_text("Send amount using: `/wamount <amount>` (Min $5, Max $1000)")
+
+async def process_withdrawal_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    method = context.user_data.get("withdrawal_method", "UPI")
     args = context.args
     if not args:
-        await update.message.reply_text("Usage: `/withdraw <amount>` (Min ₹50)")
+        await update.message.reply_text("Specify amount: `/wamount <amount>`")
         return
-    
     try:
         amount = float(args[0])
     except ValueError:
-        await update.message.reply_text("Invalid amount format.")
+        await update.message.reply_text("Invalid amount.")
         return
 
-    if amount < 50:
-        await update.message.reply_text("Minimum withdrawal is ₹50.00 ⚠️")
-        return
-
+    user = update.effective_user
     conn = sqlite3.connect("playverse.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT balance, upi FROM users WHERE user_id = ?", (user.id,))
+    cursor.execute("SELECT balance, upi, usd_address FROM users WHERE user_id = ?", (user.id,))
     row = cursor.fetchone()
     if not row or row[0] < amount:
         conn.close()
-        await update.message.reply_text("Insufficient balance for withdrawal! ❌")
-        return
-    
-    upi = row[1]
-    if upi == "Not Set":
-        conn.close()
-        await update.message.reply_text("Please save your UPI ID first using `/saveupi <upi>`.")
+        await update.message.reply_text("Insufficient balance! ❌")
         return
 
     cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user.id))
-    cursor.execute("INSERT INTO transactions (user_id, type, amount, details) VALUES (?, 'WITHDRAWAL_UPI', ?, ?)", (user.id, amount, upi))
+    cursor.execute("INSERT INTO transactions (user_id, type, amount, details) VALUES (?, ?, ?, ?)", (user.id, f"WITHDRAWAL_{method}", amount, row[1]))
     tx_id = cursor.lastrowid
     conn.commit()
     conn.close()
@@ -223,165 +249,263 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("✅ Approve", callback_data=f"admin_w_approve_{tx_id}_{user.id}_{amount}"),
          InlineKeyboardButton("❌ Reject", callback_data=f"admin_w_reject_{tx_id}_{user.id}_{amount}")]
     ])
-    await context.bot.send_message(
-        chat_id=ADMIN_CHAT_ID,
-        text=f"🔔 **New UPI Withdrawal Request**\nUser ID: `{user.id}`\nAmount: ₹{amount}\nUPI: `{upi}`",
-        reply_markup=admin_markup,
-        parse_mode="Markdown"
-    )
-    await update.message.reply_text("UPI Withdrawal request submitted! Waiting for admin approval. ⏳")
+    await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"🔔 Withdrawal Request\nUser: `{user.id}`\nAmount: `{amount}`", reply_markup=admin_markup, parse_mode="Markdown")
+    await update.message.reply_text("Withdrawal request sent successfully! ⏳")
 
-async def withdrawcrypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    args = context.args
-    if not args:
-        await update.message.reply_text("Usage: `/withdrawcrypto <amount>` (Min $5 equivalent)")
-        return
-    
-    try:
-        amount = float(args[0])
-    except ValueError:
-        await update.message.reply_text("Invalid amount format.")
-        return
-
-    conn = sqlite3.connect("playverse.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT balance, usd_address FROM users WHERE user_id = ?", (user.id,))
-    row = cursor.fetchone()
-    if not row or row[0] < amount:
-        conn.close()
-        await update.message.reply_text("Insufficient balance for withdrawal! ❌")
-        return
-    
-    usd_addr = row[1]
-    if usd_addr == "Not Set":
-        conn.close()
-        await update.message.reply_text("Please save your USDT address first using `/saveusd <wallet_address>`.")
-        return
-
-    cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user.id))
-    cursor.execute("INSERT INTO transactions (user_id, type, amount, details) VALUES (?, 'WITHDRAWAL_CRYPTO', ?, ?)", (user.id, amount, usd_addr))
-    tx_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-
-    admin_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Approve", callback_data=f"admin_w_approve_{tx_id}_{user.id}_{amount}"),
-         InlineKeyboardButton("❌ Reject", callback_data=f"admin_w_reject_{tx_id}_{user.id}_{amount}")]
-    ])
-    await context.bot.send_message(
-        chat_id=ADMIN_CHAT_ID,
-        text=f"🔔 **New Crypto Withdrawal Request**\nUser ID: `{user.id}`\nAmount: {amount}\nWallet Address: `{usd_addr}`",
-        reply_markup=admin_markup,
-        parse_mode="Markdown"
-    )
-    await update.message.reply_text("Crypto Withdrawal request submitted! Waiting for admin approval. ⏳")
-
-# --- GAMES (Dice Low/High) ---
+# --- GAMES LOGIC ---
 async def play_dice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_group_context(update, context): return
     args = context.args
-    if len(args) < 2:
-        await update.message.reply_text("Usage: `/dice <amount> <low/high>` (e.g., `/dice 10 high`)")
+    if not args:
+        await update.message.reply_text("Usage: `/dice [@user] <amount>`")
         return
-
+    
+    amount_idx = 1 if len(args) > 1 and "@" in args[0] else 0
     try:
-        amount = float(args[0])
+        amount = float(args[amount_idx])
     except ValueError:
-        await update.message.reply_text("Invalid bet amount.")
+        await update.message.reply_text("Invalid amount.")
         return
 
-    prediction = args[1].lower()
-    if prediction not in ["low", "high"]:
-        await update.message.reply_text("Please specify either 'low' (1-3) or 'high' (4-6).")
-        return
+    if not await validate_user_balance(update, amount): return
+    target = args[0] if amount_idx == 1 else "Bot"
 
-    user = update.effective_user
+    msg = await update.message.reply_dice(emoji="🎲")
+    score = msg.dice.value
+    win = score >= 4
+    payout = calculate_payout(amount)
+
     conn = sqlite3.connect("playverse.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user.id,))
-    row = cursor.fetchone()
-    if not row or row[0] < amount:
-        conn.close()
-        await update.message.reply_text("Insufficient balance!")
-        return
-
-    cursor.execute("UPDATE users SET balance = balance - ?, total_wagered = total_wagered + ? WHERE user_id = ?", (amount, amount, user.id))
+    cursor.execute("UPDATE users SET balance = balance - ?, total_wagered = total_wagered + ? WHERE user_id = ?", (amount, amount, update.effective_user.id))
+    if win:
+        cursor.execute("UPDATE users SET balance = balance + ?, wins = wins + 1 WHERE user_id = ?", (payout, update.effective_user.id))
+        res = f"🎉 Won ₹{payout:.2f} against {target}!"
+    else:
+        cursor.execute("UPDATE users SET losses = losses + 1 WHERE user_id = ?", (update.effective_user.id,))
+        res = f"😢 Lost ₹{amount:.2f} against {target}."
     conn.commit()
     conn.close()
+    await update.message.reply_text(f"🎲 Dice Score: {score}\n{res}")
+
+async def play_dr(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_group_context(update, context): return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: `/dr <amount>`")
+        return
+    amount = float(args[0])
+    if not await validate_user_balance(update, amount): return
 
     roll = random.randint(1, 6)
-    is_low = roll in [1, 2, 3]
-    win = (prediction == "low" and is_low) or (prediction == "high" and not is_low)
-    
-    payout = calculate_payout(amount) if win else 0.0
+    win = roll >= 4
+    payout = calculate_payout(amount)
 
     conn = sqlite3.connect("playverse.db")
     cursor = conn.cursor()
+    cursor.execute("UPDATE users SET balance = balance - ?, total_wagered = total_wagered + ? WHERE user_id = ?", (amount, amount, update.effective_user.id))
     if win:
-        cursor.execute("UPDATE users SET balance = balance + ?, wins = wins + 1 WHERE user_id = ?", (payout, user.id))
-        conn.commit()
-        conn.close()
-        await update.message.reply_text(f"🎲 Dice rolled: **{roll}**\n🎉 You WON ₹{payout:.2f}!")
+        cursor.execute("UPDATE users SET balance = balance + ?, wins = wins + 1 WHERE user_id = ?", (payout, update.effective_user.id))
+        res = f"🎉 Dice Roulette Win: ₹{payout:.2f}!"
     else:
-        cursor.execute("UPDATE users SET losses = losses + 1 WHERE user_id = ?", (user.id,))
-        conn.commit()
-        conn.close()
-        await update.message.reply_text(f"🎲 Dice rolled: **{roll}**\n😢 You lost ₹{amount:.2f}.")
+        cursor.execute("UPDATE users SET losses = losses + 1 WHERE user_id = ?", (update.effective_user.id,))
+        res = f"😢 Lost ₹{amount:.2f}."
+    conn.commit()
+    conn.close()
+    await update.message.reply_text(f"🎲 Roulette Roll: {roll}\n{res}")
 
-# --- ADMIN APPROVAL HANDLER ---
+async def play_sport_emoji(update: Update, context: ContextTypes.DEFAULT_TYPE, emoji_char: str, name: str):
+    if not await check_group_context(update, context): return
+    args = context.args
+    if not args:
+        await update.message.reply_text(f"Usage: `/<game> [@user] <amount>`")
+        return
+    amount_idx = 1 if len(args) > 1 and "@" in args[0] else 0
+    try:
+        amount = float(args[amount_idx])
+    except ValueError:
+        await update.message.reply_text("Invalid amount.")
+        return
+
+    if not await validate_user_balance(update, amount): return
+    target = args[0] if amount_idx == 1 else "Bot"
+
+    msg = await update.message.reply_dice(emoji=emoji_char)
+    score = msg.dice.value
+    win = score >= 4
+    payout = calculate_payout(amount, 1.9)
+
+    conn = sqlite3.connect("playverse.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET balance = balance - ?, total_wagered = total_wagered + ? WHERE user_id = ?", (amount, amount, update.effective_user.id))
+    if win:
+        cursor.execute("UPDATE users SET balance = balance + ?, wins = wins + 1 WHERE user_id = ?", (payout, update.effective_user.id))
+        res = f"🎉 Won ₹{payout:.2f} vs {target}!"
+    else:
+        cursor.execute("UPDATE users SET losses = losses + 1 WHERE user_id = ?", (update.effective_user.id,))
+        res = f"😢 Lost ₹{amount:.2f} vs {target}."
+    conn.commit()
+    conn.close()
+    await update.message.reply_text(f"{emoji_char} {name} Score: {score}\n{res}")
+
+async def play_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_group_context(update, context): return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: `/coin [@user] <amount>`")
+        return
+    amount_idx = 1 if len(args) > 1 and "@" in args[0] else 0
+    try:
+        amount = float(args[amount_idx])
+    except ValueError:
+        await update.message.reply_text("Invalid amount.")
+        return
+
+    if not await validate_user_balance(update, amount): return
+    res_side = random.choice(["heads", "tails"])
+    payout = calculate_payout(amount, 1.95)
+
+    conn = sqlite3.connect("playverse.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET balance = balance - ?, total_wagered = total_wagered + ? WHERE user_id = ?", (amount, amount, update.effective_user.id))
+    cursor.execute("UPDATE users SET balance = balance + ?, wins = wins + 1 WHERE user_id = ?", (payout, update.effective_user.id))
+    conn.commit()
+    conn.close()
+    await update.message.reply_text(f"🪙 Coin landed on: **{res_side.upper()}**\n🎉 You won ₹{payout:.2f}!", parse_mode="Markdown")
+
+async def battle_1v1(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_group_context(update, context): return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: `/battle @user`")
+        return
+    await update.message.reply_text(f"⚔️ 1v1 Battle challenge sent to {args[0]}! Waiting for opponent response.")
+
+async def jackpot_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🎰 **Jackpot Pool Info**\nCurrent Pool Prize: `₹50,000.00`\nPlay any game to automatically qualify!", parse_mode="Markdown")
+
+async def casino_game(update: Update, context: ContextTypes.DEFAULT_TYPE, name: str, mult: float):
+    if not await check_group_context(update, context): return
+    args = context.args
+    if not args:
+        await update.message.reply_text(f"Usage: `/<game> <amount>`")
+        return
+    try:
+        amount = float(args[0])
+    except ValueError:
+        await update.message.reply_text("Invalid amount.")
+        return
+    if not await validate_user_balance(update, amount): return
+
+    win = random.random() < 0.45
+    payout = calculate_payout(amount, mult)
+
+    conn = sqlite3.connect("playverse.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET balance = balance - ?, total_wagered = total_wagered + ? WHERE user_id = ?", (amount, amount, update.effective_user.id))
+    if win:
+        cursor.execute("UPDATE users SET balance = balance + ?, wins = wins + 1 WHERE user_id = ?", (payout, update.effective_user.id))
+        res = f"🎉 Won ₹{payout:.2f}!"
+    else:
+        cursor.execute("UPDATE users SET losses = losses + 1 WHERE user_id = ?", (update.effective_user.id,))
+        res = f"😢 Lost ₹{amount:.2f}."
+    conn.commit()
+    conn.close()
+    await update.message.reply_text(f"🎰 **{name.upper()}**\n{res}", parse_mode="Markdown")
+
+# --- STATS COMMANDS ---
+async def top_wager(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    conn = sqlite3.connect("playverse.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT username, total_wagered FROM users ORDER BY total_wagered DESC LIMIT 5")
+    rows = cursor.fetchall()
+    conn.close()
+
+    text = "🏆 **Top Players by Wager**\n\n"
+    for idx, row in enumerate(rows, 1):
+        name = row[0] or "User"
+        wager = row[1]
+        text += f"{idx}. {name} — ₹{wager:.2f}\n"
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+async def mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    conn = sqlite3.connect("playverse.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT balance, total_wagered, wins, losses FROM users WHERE user_id = ?", (user.id,))
+    row = cursor.fetchone()
+    conn.close()
+    bal, wag, wins, losses = row if row else (0, 0, 0, 0)
+    await update.message.reply_text(f"📊 **PREMIUM STATS CARD**\n👤 {user.first_name}\n💰 Balance: ₹{bal:.2f}\n🎲 Total Wagered: ₹{wag:.2f}\n🏆 Wins: {wins} | Losses: {losses}", parse_mode="Markdown")
+
+async def invite_ref(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ref = f"https://t.me/{context.bot.username}?start=ref_{update.effective_user.id}"
+    await update.message.reply_text(f"🔗 **Your Referral Link:**\n{ref}", parse_mode="Markdown")
+
+# --- ADMIN & UTILS ---
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-
     if data.startswith("admin_w_"):
         parts = data.split("_")
-        action = parts[2]
-        tx_id = parts[3]
-        user_id = int(parts[4])
-        amount = float(parts[5])
-
+        action, tx_id, user_id, amount = parts[2], parts[3], int(parts[4]), float(parts[5])
         conn = sqlite3.connect("playverse.db")
         cursor = conn.cursor()
         if action == "approve":
             cursor.execute("UPDATE transactions SET status = 'APPROVED' WHERE tx_id = ?", (tx_id,))
             conn.commit()
             conn.close()
-            await query.message.edit_text(f"✅ Withdrawal #{tx_id} Approved & Paid out.")
-            await context.bot.send_message(chat_id=user_id, text=f"✅ Your withdrawal of {amount} has been approved and paid out!")
+            await query.message.edit_text(f"✅ Withdrawal #{tx_id} Approved.")
+            await context.bot.send_message(chat_id=user_id, text=f"✅ Withdrawal of {amount} approved & paid out!")
         else:
             cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
             cursor.execute("UPDATE transactions SET status = 'REJECTED' WHERE tx_id = ?", (tx_id,))
             conn.commit()
             conn.close()
-            await query.message.edit_text(f"❌ Withdrawal #{tx_id} Rejected (Funds refunded).")
-            await context.bot.send_message(chat_id=user_id, text=f"❌ Your withdrawal request of {amount} was rejected. Funds refunded.")
+            await query.message.edit_text(f"❌ Withdrawal #{tx_id} Rejected (Refunded).")
+            await context.bot.send_message(chat_id=user_id, text=f"❌ Withdrawal of {amount} rejected. Funds refunded.")
 
-# --- MESSAGE HANDLERS (UTR / Proof Submissions) ---
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("awaiting_utr"):
         proof = update.message.text
         context.user_data["awaiting_utr"] = False
         await update.message.reply_text("Wait for admin approval ⏳")
-        await context.bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=f"📥 **New Deposit Proof**\nUser ID: `{update.effective_user.id}`\nProof/UTR/TxID: `{proof}`",
-            parse_mode="Markdown"
-        )
+        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"📥 **Deposit Proof**\nUser: `{update.effective_user.id}`\nProof: `{proof}`", parse_mode="Markdown")
 
 def main():
     application = Application.builder().token(TOKEN).build()
 
+    # Wallet & Finance Handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler(["wallet", "balance"], wallet_balance))
-    application.add_handler(CommandHandler("saveupi", saveupi))
-    application.add_handler(CommandHandler("saveusd", saveusd))
     application.add_handler(CommandHandler("deposit", deposit))
     application.add_handler(CommandHandler("withdraw", withdraw))
-    application.add_handler(CommandHandler("withdrawcrypto", withdrawcrypto))
+    application.add_handler(CommandHandler("wamount", process_withdrawal_amount))
+    application.add_handler(CommandHandler("saveupi", saveupi))
+    application.add_handler(CommandHandler("tip", tip_user))
+    application.add_handler(CommandHandler("wagerstatus", wager_status))
+
+    # Games Handlers
     application.add_handler(CommandHandler("dice", play_dice))
-    
+    application.add_handler(CommandHandler("dr", play_dr))
+    application.add_handler(CommandHandler("basket", lambda u, c: play_sport_emoji(u, c, "🏀", "Basketball")))
+    application.add_handler(CommandHandler("bowl", lambda u, c: play_sport_emoji(u, c, "🎳", "Bowling")))
+    application.add_handler(CommandHandler("dart", lambda u, c: play_sport_emoji(u, c, "🎯", "Darts")))
+    application.add_handler(CommandHandler("coin", play_coin))
+    application.add_handler(CommandHandler("battle", battle_1v1))
+    application.add_handler(CommandHandler("jackpot", jackpot_info))
+    application.add_handler(CommandHandler("slots", lambda u, c: casino_game(u, c, "Slots", 2.0)))
+    application.add_handler(CommandHandler("football", lambda u, c: play_sport_emoji(u, c, "⚽", "Football")))
+
+    # Stats Handlers
+    application.add_handler(CommandHandler("topwager", top_wager))
+    application.add_handler(CommandHandler("mystats", mystats))
+    application.add_handler(CommandHandler("invite", invite_ref))
+
+    # Callbacks & Messages
     application.add_handler(CallbackQueryHandler(deposit_callback, pattern="^dep_"))
+    application.add_handler(CallbackQueryHandler(withdraw_callback, pattern="^w_type_"))
     application.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_w_"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
 
@@ -390,4 +514,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
